@@ -1,0 +1,10 @@
+{
+    "name": "SimplenetesProxyJS",
+    "version": "0.1.0",
+    "dependencies": {
+        "@universe-ai/pocket-sockets": "^1.0.1"
+    },
+    "devDependencies": {
+        "pkg": "^4.4.9"
+    }
+}
