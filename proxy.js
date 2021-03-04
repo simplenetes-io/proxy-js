@@ -616,7 +616,7 @@ class Proxy
      * @param {Socket} proxySocket connected to other Proxy
      * @param {boolean} sendProxy set to true if target pod is expecting proxy protocol header
      * @param {number} clusterPort
-     * @param {Buffer} buffer whatever data needed to be passed on because it was read it earlier
+     * @param {Buffer} buffer whatever data needed to be send on cluster port socket because it was read it earlier from proxy host port
      */
     _pairToProxy(clusterPortSocket, proxySocket, sendProxy, clusterPort, buffer)
     {
@@ -628,7 +628,8 @@ class Proxy
 
         const INITIAL           = 1;
         const READY             = 3;
-        const bufferedData      = [buffer];
+        const bufferedDataOut   = [buffer];
+        const bufferedDataIn    = [];
         let stage               = INITIAL;
 
         proxySocket.onData( data => {
@@ -649,15 +650,28 @@ class Proxy
             /* Make a header up if sender did not provide.
              * https://www.haproxy.org/download/1.8/doc/proxy-protocol.txt
              */
-            header = header || `PROXY TCP4 ${clusterPortSocket.getLocalAddress()} ${proxySocket.getRemoteAddress()} ${clusterPortSocket.getRemotePort()} ${clusterPortSocket.getLocalPort()}}`;
+            header = header || `PROXY TCP4 ${clusterPortSocket.getLocalAddress()} ${proxySocket.getRemoteAddress()} ${clusterPortSocket.getRemotePort()} ${clusterPortSocket.getLocalPort()}`;
 
             logDebug(`Send proxy header:`, header);
             proxySocket.send(Buffer.from(header + "\r\n"));
         };
 
-        const flushBuffer = () => {
-            while (bufferedData.length > 0) {
-                const data = bufferedData.shift();
+        /**
+         * Send any buffered data "accidentally" read from proxy to cluster port.
+         */
+        const flushBufferToClusterPort = () => {
+            while (bufferedDataOut.length > 0) {
+                const data = bufferedDataOut.shift();
+                clusterPortSocket.send(data);
+            }
+        };
+
+        /**
+         * Send any buffered data read from cluster port to proxy
+         */
+        const flushBufferToProxy = () => {
+            while (bufferedDataIn.length > 0) {
+                const data = bufferedDataIn.shift();
                 proxySocket.send(data);
             }
         };
@@ -676,15 +690,15 @@ class Proxy
                     sendProxyHeader();
                 }
                 stage = READY;
-                flushBuffer();
+                flushBufferToClusterPort();
             }
         }, TIMEOUT_SENDPROXY);
 
         clusterPortSocket.onData( data => {
-            bufferedData.push(data);
+            bufferedDataIn.push(data);
 
             if (stage === INITIAL) {
-                const header = this._parseHeader(bufferedData);
+                const header = this._parseHeader(bufferedDataIn);
                 if (header === null) {
                     /* Not enough data to parse, wait for more */
                     return;
@@ -707,11 +721,12 @@ class Proxy
 
                 logDebug("Cluster port successfully paired with proxy");
                 stage = READY;
+                flushBufferToClusterPort();
                 /* Fall through to next stage */
             }
 
             if (stage === READY) {
-                flushBuffer();
+                flushBufferToProxy();
             }
         });
     }
