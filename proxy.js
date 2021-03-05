@@ -3,6 +3,7 @@
  */
 
 const fs = require("fs");
+const path = require("path");
 const {TCPServer, TCPClient} = require("@universe-ai/pocket-sockets");
 
 const LOGLEVEL = ( (process ? process.env : window) || {} ).LOG_LEVEL || "info";
@@ -63,40 +64,48 @@ class Proxy
      * The proxy.conf, the values below are the default values if not specified:
      * portsConf ./portmappings.conf
      * hostsConf ./hosts.conf
-     * host localhost
+     * host 0.0.0.0
      * port 32767
      * clusterPorts 1024-29999,32768-65535
      */
     constructor(proxyConf)
     {
-        this.proxyConf = proxyConf || "./proxy.conf";
+        this.proxyConf = path.resolve(process.cwd(), proxyConf || "./proxy.conf");
 
         this.config = {
             PORTSCONF: "./portmappings.conf",
             HOSTSCONF: "./hosts.conf",
-            HOST: "localhost",
+            HOST: "0.0.0.0",
             //PODHOST: "",  // This can be set to have a different host for when connecting to host ports
             PORT: 32767,
             CLUSTERPORTS: "1024-29999,32768-65535"
         };
 
         /** @type {HostAddress[]} */
-        this.hostList               = []
+        this.hostList               = [];
         /** @type {mapping[]} */
         this.clusterPortsMappings   = [];
         this.proxyListener          = null
         this.clusterPortListeners   = null;
 
+        log(`Loading conf file: ${this.proxyConf}`);
         this._readProxyConfig(this.proxyConf);
+
+        this.portsConfFilepath = path.resolve(path.dirname(this.proxyConf), this.config.PORTSCONF);
+        this.hostsConfFilepath = path.resolve(path.dirname(this.proxyConf), this.config.HOSTSCONF);
+
+        log(`Loading ports conf file: ${this.portsConfFilepath}`);
+        if (!this._readClusterPortsConf()) {
+            logWarn(`Could not find ports conf file ${this.portsConfFilepath}`);
+        }
+
+        log(`Loading hosts conf file: ${this.hostsConfFilepath}`);
+        if (!this._readHostsConf()) {
+            logWarn(`Could not find hosts conf file ${this.hostsConfFilepath}`);
+        }
+
         this._openProxyListener();
         this._openClusterPortListeners();
-
-        if (!this._readClusterPortsConf()) {
-            logWarn(`Could not find ports conf file ${this.config.PORTSCONF}`);
-        }
-        if (!this._readHostsConf()) {
-            logWarn(`Could not find hosts conf file ${this.config.HOSTSCONF}`);
-        }
 
         this.isShutdown = false;
         this._loop();
@@ -118,14 +127,21 @@ class Proxy
         const o = {};
         lines.forEach( line => {
             try {
-                const key   = line.match("^([^ ]+)")[1].toUpperCase();
-                const value = line.match("^[^ ]+ (.*)$")[1];
+                if (!line || line.startsWith("#")) {
+                    return;
+                }
+                const key   = line.match("^([A-Za-z0-9_]+)[ ]")[1].toUpperCase();
+                const value = line.match("^[^ ]+[ ]+(.*)$")[1];
+                if (!key || !value) {
+                    throw "Cannot parse line";
+                }
                 if (key === "PORT") {
                     value = parseInt(value);
                 }
                 this.config[key] = value.trim();
             }
             catch(e) {
+                logWarn(`Unknown line in config file: ${line}`);
                 /* Ignore */
             }
         });
@@ -157,10 +173,10 @@ class Proxy
     {
         let data;
         try {
-            data = fs.readFileSync(this.config.HOSTSCONF, {encoding: "utf8", flag: "r"});
+            data = fs.readFileSync(this.hostsConfFilepath, {encoding: "utf8", flag: "r"});
         }
         catch(e) {
-            logDebug(`Could not read hosts conf file ${this.config.HOSTSCONF}`);
+            logDebug(`Could not read hosts conf file ${this.hostsConfFilepath}`);
             return false;
         }
 
@@ -197,10 +213,10 @@ class Proxy
     {
         let data;
         try {
-            data = fs.readFileSync(this.config.PORTSCONF, {encoding: "utf8", flag: "r"});
+            data = fs.readFileSync(this.portsConfFilepath, {encoding: "utf8", flag: "r"});
         }
         catch(e) {
-            logDebug(`Could not read ports conf file ${this.config.PORTSCONF}`);
+            logDebug(`Could not read ports conf file ${this.portsConfFilepath}`);
             return false;
         }
 
