@@ -75,7 +75,7 @@ class Proxy
         this.config = {
             PORTSCONF: "./portmappings.conf",
             HOSTSCONF: "./hosts.conf",
-            HOST: "0.0.0.0",
+            //HOST: "0.0.0.0",  // The default is taken from hosts.conf line 1
             //PODHOST: "",  // This can be set to have a different host for when connecting to host ports
             PORT: 32767,
             CLUSTERPORTS: "1024-29999,32768-65535"
@@ -145,6 +145,8 @@ class Proxy
                 /* Ignore */
             }
         });
+
+        // Note: If HOST is not set we will get a local IP from hosts.conf
     }
 
     shutdown()
@@ -193,6 +195,7 @@ class Proxy
                 if (addressTuple.length < 2) {
                     return;
                 }
+                // TODO: Verify IP to be local.
                 const hostAddress = [
                     addressTuple[0],
                     parseInt(addressTuple[1])
@@ -205,6 +208,11 @@ class Proxy
         });
 
         this.hostList = hosts;
+
+        if (!this.config.HOST && this.hostList.length > 0) {
+            this.config.HOST = this.hostList[0][0]
+            log(`Derived HOST from hosts.conf as: ${this.config.HOST}`);
+        }
 
         return true;
     }
@@ -333,6 +341,7 @@ class Proxy
     async _handleProxyConnection(proxyServerSocket)
     {
         logDebug(`Proxy connection incoming`);
+        // TODO: verify that incoming connection source IP is in hostlist.
 
         const INITIAL       = 1;
         const READY         = 3;
@@ -512,6 +521,7 @@ class Proxy
     async _handleClusterPortConnection(clusterPortSocket, clusterPort)
     {
         logDebug(`Incoming cluster port connection on: ${clusterPort}`);
+        // TODO: verify that source address is in hostlist.
         const addresses = this._getHostAddresses(clusterPort);
         let index;
         for (index=0; index<addresses.length; index++) {
