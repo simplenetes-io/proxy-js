@@ -4,6 +4,8 @@ The proxy's job is to proxy internal traffic within the cluster.
 
 In the spirit of Simplenetes the proxy is robust and simple.
 
+This version of the proxy is written in JavaScript and serves as a prototype for the Golang version which is not yet finished.
+
 The proxy runs on each _host_ in the cluster.
 
 It listens to a range of _cluster ports_. A cluster port is a cluster wide port number which is associated with one or many pods.
