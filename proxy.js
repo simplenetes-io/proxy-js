@@ -351,99 +351,114 @@ class Proxy
         let serverSocket    = null;
 
         proxyServerSocket.onData( async (data) => {
-            buffered.push(data);
+            try {
+                buffered.push(data);
 
-            if (stage === INITIAL) {
-                const header = await this._parseHeader(buffered);
-                if (header === null) {
-                    /* Await more data */
-                    logDebug("Await more data on proxy socket to determine header");
-                    return;
-                }
-                if (header === "") {
-                    /* ERROR: No header present, so cannot continue */
-                    logError("Proxy incoming socket could not read header data");
-                    proxyServerSocket.disconnect();
-                    return;
-                }
-                /* Extract ClusterPort from the header */
-                let clusterPort = null;
-                try {
-                    logDebug("Read header from incoming proxy connection:", header);
-                    clusterPort = parseInt(header.match("^PROXY TCP4 [^ ]+ [^ ]+ [^ ]+ ([^ ]+)")[1]);
-                }
-                catch(e) {
-                    logError("Could not parse header from incoming proxy socket:", e);
-                    proxyServerSocket.disconnect();
-                    return;
-                }
-
-                logDebug(`Extracted from proxy header the cluster port: ${clusterPort}`);
-
-                const mappings = this._findClusterPortMappings(clusterPort);
-                if (mappings.length === 0) {
-                    logDebug(`No mapping found for cluster port: ${clusterPort}`);
-                    proxyServerSocket.disconnect();
-                    return;
-                }
-
-                let index;
-                let busy            = false;
-                let mapping         = null;
-                for (index=0; index<mappings.length; index++) {
-                    mapping = mappings[index];
-                    if (mapping.activeConnections >= mapping.maxConn) {
-                        /* Mark that there is (at least) one but it is busy */
-                        busy = true;
-                        mapping = null;
-                        continue;
+                if (stage === INITIAL) {
+                    const header = await this._parseHeader(buffered);
+                    if (header === null) {
+                        /* Await more data */
+                        logDebug("Await more data on proxy socket to determine header");
+                        return;
                     }
-                    serverSocket = await this._openHostPort(mapping.hostPort);
-                    if (!serverSocket) {
-                        logError("Could not connect to host port");
-                        mapping = null;
-                        continue;
-                    }
-                    /* Successful connection, break here and keep mapping object as it is */
-                    break;
-                }
-
-                if (mapping) {
-                    logDebug("Found mapping:", mapping);
-                    /* Pair the sockets */
-                    mapping.activeConnections++;
-
-                    proxyServerSocket.onDisconnect( () => {
-                        mapping.activeConnections--;
-                        serverSocket.disconnect();
-                    });
-
-                    serverSocket.onDisconnect( () => {
+                    if (header === "") {
+                        /* ERROR: No header present, so cannot continue */
+                        logError("Proxy incoming socket could not read header data");
                         proxyServerSocket.disconnect();
-                    });
+                        return;
+                    }
+                    /* Extract ClusterPort from the header */
+                    let clusterPort = null;
+                    try {
+                        logDebug("Read header from incoming proxy connection:", header);
+                        clusterPort = parseInt(header.match("^PROXY TCP4 [^ ]+ [^ ]+ [^ ]+ ([^ ]+)")[1]);
+                    }
+                    catch(e) {
+                        logError("Could not parse header from incoming proxy socket:", e);
+                        proxyServerSocket.disconnect();
+                        return;
+                    }
 
-                    serverSocket.onData( data => {
-                        proxyServerSocket.send(data);
-                    });
+                    logDebug(`Extracted from proxy header the cluster port: ${clusterPort}`);
 
-                    stage = READY;
-                    proxyServerSocket.send(Buffer.from(`SENDPROXY=${mapping.sendProxy}\r\n`));
-                    /* Fall through to next stage */
-                }
-                else if (busy) {
-                    logDebug(`Cluster port ${clusterPort} is busy`);
-                    proxyServerSocket.send(Buffer.from("BUSY\r\n"));
-                    proxyServerSocket.disconnect();
-                }
-                else {
-                    /* No pod here mapped for the cluster port requested */
-                    proxyServerSocket.disconnect();
-                }
+                    const mappings = this._findClusterPortMappings(clusterPort);
+                    if (mappings.length === 0) {
+                        logDebug(`No mapping found for cluster port: ${clusterPort}`);
+                        proxyServerSocket.disconnect();
+                        return;
+                    }
 
+                    let index;
+                    let busy            = false;
+                    let mapping         = null;
+                    for (index=0; index<mappings.length; index++) {
+                        mapping = mappings[index];
+                        if (mapping.activeConnections >= mapping.maxConn) {
+                            /* Mark that there is (at least) one but it is busy */
+                            busy = true;
+                            mapping = null;
+                            continue;
+                        }
+                        serverSocket = await this._openHostPort(mapping.hostPort);
+                        if (!serverSocket) {
+                            logError("Could not connect to host port");
+                            mapping = null;
+                            continue;
+                        }
+                        /* Successful connection, break here and keep mapping object as it is */
+                        break;
+                    }
+
+                    if (mapping) {
+                        logDebug("Found mapping:", mapping);
+                        /* Pair the sockets */
+                        mapping.activeConnections++;
+
+                        proxyServerSocket.onDisconnect( () => {
+                            mapping.activeConnections--;
+                            serverSocket.disconnect();
+                        });
+
+                        serverSocket.onDisconnect( () => {
+                            proxyServerSocket.disconnect();
+                        });
+
+                        serverSocket.onData( data => {
+                            try {
+                                proxyServerSocket.send(data);
+                            }
+                            catch(e) {
+                                if (serverSocket) {
+                                    serverSocket.close();
+                                }
+                            }
+                        });
+
+                        stage = READY;
+                        proxyServerSocket.send(Buffer.from(`SENDPROXY=${mapping.sendProxy}\r\n`));
+                        /* Fall through to next stage */
+                    }
+                    else if (busy) {
+                        logDebug(`Cluster port ${clusterPort} is busy`);
+                        proxyServerSocket.send(Buffer.from("BUSY\r\n"));
+                        proxyServerSocket.disconnect();
+                    }
+                    else {
+                        /* No pod here mapped for the cluster port requested */
+                        proxyServerSocket.disconnect();
+                    }
+
+                }
+                if (stage === READY) {
+                    while (buffered.length > 0) {
+                        serverSocket.send(buffered.shift());
+                    }
+                }
             }
-            if (stage === READY) {
-                while (buffered.length > 0) {
-                    serverSocket.send(buffered.shift());
+            catch(e) {
+                logError(e);
+                if (proxyServerSocket) {
+                    proxyServerSocket.disconnect();
                 }
             }
         });
@@ -629,8 +644,7 @@ class Proxy
                 client.connect();
             }
             catch(e) {
-                console.error(e);
-                logError(`Could not connect to Proxy`);
+                logError(`Could not connect to Proxy`, e);
             }
         });
     }
@@ -659,7 +673,14 @@ class Proxy
         let stage               = INITIAL;
 
         proxySocket.onData( data => {
-            clusterPortSocket.send(data);
+            try {
+                clusterPortSocket.send(data);
+            }
+            catch(e) {
+                if (proxySocket) {
+                    proxySocket.close();
+                }
+            }
         });
 
         proxySocket.onDisconnect( () => {
@@ -679,7 +700,14 @@ class Proxy
             header = header || `PROXY TCP4 ${clusterPortSocket.getLocalAddress()} ${proxySocket.getRemoteAddress()} ${clusterPortSocket.getRemotePort()} ${clusterPortSocket.getLocalPort()}`;
 
             logDebug(`Send proxy header:`, header);
-            proxySocket.send(Buffer.from(header + "\r\n"));
+            try {
+                proxySocket.send(Buffer.from(header + "\r\n"));
+            }
+            catch(e) {
+                if (clusterPortSocket) {
+                    clusterPortSocket.close();
+                }
+            }
         };
 
         /**
@@ -688,7 +716,14 @@ class Proxy
         const flushBufferToClusterPort = () => {
             while (bufferedDataOut.length > 0) {
                 const data = bufferedDataOut.shift();
-                clusterPortSocket.send(data);
+                try {
+                    clusterPortSocket.send(data);
+                }
+                catch(e) {
+                    if (proxySocket) {
+                        proxySocket.close();
+                    }
+                }
             }
         };
 
@@ -698,7 +733,14 @@ class Proxy
         const flushBufferToProxy = () => {
             while (bufferedDataIn.length > 0) {
                 const data = bufferedDataIn.shift();
-                proxySocket.send(data);
+                try {
+                    proxySocket.send(data);
+                }
+                catch(e) {
+                    if (clusterPortSocket) {
+                        clusterPortSocket.close();
+                    }
+                }
             }
         };
 
